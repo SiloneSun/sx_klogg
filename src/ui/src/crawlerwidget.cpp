@@ -1210,6 +1210,46 @@ void CrawlerWidget::removeSelectedFilterRules()
     applyFilterRules();
 }
 
+void CrawlerWidget::moveSelectedFilterRuleUp()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    const auto selectedRows = highlighterRulesTable_->selectionModel()->selectedRows();
+    if ( selectedRows.isEmpty() ) {
+        return;
+    }
+
+    const int row = selectedRows.first().row();
+    if ( row <= 0 || row >= filterRules_.size() ) {
+        return;
+    }
+
+    std::swap( filterRules_[ row ], filterRules_[ row - 1 ] );
+    refreshFilterRulesPanel();
+    highlighterRulesTable_->selectRow( row - 1 );
+    applyFilterRules();
+}
+
+void CrawlerWidget::moveSelectedFilterRuleDown()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    const auto selectedRows = highlighterRulesTable_->selectionModel()->selectedRows();
+    if ( selectedRows.isEmpty() ) {
+        return;
+    }
+
+    const int row = selectedRows.first().row();
+    if ( row < 0 || row >= filterRules_.size() - 1 ) {
+        return;
+    }
+
+    std::swap( filterRules_[ row ], filterRules_[ row + 1 ] );
+    refreshFilterRulesPanel();
+    highlighterRulesTable_->selectRow( row + 1 );
+    applyFilterRules();
+}
+
 void CrawlerWidget::enableAllFilterRules()
 {
     filterRules_ = filterRulesFromPanel();
@@ -1666,6 +1706,8 @@ void CrawlerWidget::setup()
 
     addFilterRuleButton_ = new QPushButton( tr( "Add" ), this );
     removeFilterRuleButton_ = new QPushButton( tr( "Remove" ), this );
+    moveFilterRuleUpButton_ = new QPushButton( tr( "Move up" ), this );
+    moveFilterRuleDownButton_ = new QPushButton( tr( "Move down" ), this );
     enableAllFilterRulesButton_ = new QPushButton( tr( "Enable all" ), this );
     disableAllFilterRulesButton_ = new QPushButton( tr( "Disable all" ), this );
     removeAllFilterRulesButton_ = new QPushButton( tr( "Remove all" ), this );
@@ -1677,6 +1719,8 @@ void CrawlerWidget::setup()
     filterRulesToolbarLayout->setContentsMargins( 0, 0, 0, 0 );
     filterRulesToolbarLayout->addWidget( addFilterRuleButton_ );
     filterRulesToolbarLayout->addWidget( removeFilterRuleButton_ );
+    filterRulesToolbarLayout->addWidget( moveFilterRuleUpButton_ );
+    filterRulesToolbarLayout->addWidget( moveFilterRuleDownButton_ );
     filterRulesToolbarLayout->addWidget( enableAllFilterRulesButton_ );
     filterRulesToolbarLayout->addWidget( disableAllFilterRulesButton_ );
     filterRulesToolbarLayout->addWidget( removeAllFilterRulesButton_ );
@@ -1745,6 +1789,10 @@ void CrawlerWidget::setup()
     connect( addFilterRuleButton_, &QPushButton::clicked, this, &CrawlerWidget::addFilterRule );
     connect( removeFilterRuleButton_, &QPushButton::clicked, this,
              &CrawlerWidget::removeSelectedFilterRules );
+    connect( moveFilterRuleUpButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::moveSelectedFilterRuleUp );
+    connect( moveFilterRuleDownButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::moveSelectedFilterRuleDown );
     connect( enableAllFilterRulesButton_, &QPushButton::clicked, this,
              &CrawlerWidget::enableAllFilterRules );
     connect( disableAllFilterRulesButton_, &QPushButton::clicked, this,

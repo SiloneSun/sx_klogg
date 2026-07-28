@@ -358,6 +358,8 @@ class CrawlerWidget : public QSplitter,
     void loadFilterRulesFromActiveHighlighters();
     void addFilterRule();
     void removeSelectedFilterRules();
+    void moveSelectedFilterRuleUp();
+    void moveSelectedFilterRuleDown();
     void enableAllFilterRules();
     void disableAllFilterRules();
     void removeAllFilterRules();
@@ -408,6 +410,8 @@ class CrawlerWidget : public QSplitter,
     QTableWidget* highlighterRulesTable_;
     QPushButton* addFilterRuleButton_;
     QPushButton* removeFilterRuleButton_;
+    QPushButton* moveFilterRuleUpButton_;
+    QPushButton* moveFilterRuleDownButton_;
     QPushButton* enableAllFilterRulesButton_;
     QPushButton* disableAllFilterRulesButton_;
     QPushButton* removeAllFilterRulesButton_;
