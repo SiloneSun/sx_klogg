@@ -75,6 +75,7 @@ class QCompleter;
 class OverviewWidget;
 class QStackedWidget;
 class QTableWidget;
+class QTableWidgetItem;
 
 // Implements the central widget of the application.
 // It includes both windows, the search line, the info
@@ -357,10 +358,14 @@ class CrawlerWidget : public QSplitter,
     void loadFilterRulesFromActiveHighlighters();
     void addFilterRule();
     void removeSelectedFilterRules();
+    void enableAllFilterRules();
+    void disableAllFilterRules();
+    void removeAllFilterRules();
     void applyFilterRules();
     void saveFilterRules();
     void loadFilterRules();
     void pickFilterRuleColor( int row, int column );
+    void filterRuleItemChanged( QTableWidgetItem* item );
     QList<UnifiedFilterRule> filterRulesFromPanel() const;
 
     // Reload predefined filters after changing settings
@@ -403,6 +408,9 @@ class CrawlerWidget : public QSplitter,
     QTableWidget* highlighterRulesTable_;
     QPushButton* addFilterRuleButton_;
     QPushButton* removeFilterRuleButton_;
+    QPushButton* enableAllFilterRulesButton_;
+    QPushButton* disableAllFilterRulesButton_;
+    QPushButton* removeAllFilterRulesButton_;
     QPushButton* applyFilterRulesButton_;
     QPushButton* saveFilterRulesButton_;
     QPushButton* loadFilterRulesButton_;

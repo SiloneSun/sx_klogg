@@ -1035,7 +1035,7 @@ enum FilterRuleColumn {
     RegexColumn,
     IgnoreCaseColumn,
     WholeWordColumn,
-    OnlyMatchColumn,
+    HighlightModeColumn,
     FilterRuleColumnCount
 };
 
@@ -1056,6 +1056,15 @@ QTableWidgetItem* makeColorItem( const QColor& color )
     item->setBackground( QBrush( color ) );
     item->setData( Qt::UserRole, color );
     return item;
+}
+
+QComboBox* makeHighlightModeCombo( bool keywordOnly )
+{
+    auto* combo = new QComboBox;
+    combo->addItem( QObject::tr( "Keyword" ), true );
+    combo->addItem( QObject::tr( "Whole line" ), false );
+    combo->setCurrentIndex( keywordOnly ? 0 : 1 );
+    return combo;
 }
 }
 
@@ -1088,7 +1097,15 @@ void CrawlerWidget::refreshFilterRulesPanel()
         highlighterRulesTable_->setItem( row, RegexColumn, makeCheckItem( rule.useRegex ) );
         highlighterRulesTable_->setItem( row, IgnoreCaseColumn, makeCheckItem( rule.ignoreCase ) );
         highlighterRulesTable_->setItem( row, WholeWordColumn, makeCheckItem( rule.wholeWord ) );
-        highlighterRulesTable_->setItem( row, OnlyMatchColumn, makeCheckItem( rule.onlyMatch ) );
+
+        auto* highlightModeCombo = makeHighlightModeCombo( rule.onlyMatch );
+        connect( highlightModeCombo, QOverload<int>::of( &QComboBox::currentIndexChanged ), this,
+                 [ this ]( int ) {
+                     if ( !updatingFilterRulesPanel_ ) {
+                         applyFilterRules();
+                     }
+                 } );
+        highlighterRulesTable_->setCellWidget( row, HighlightModeColumn, highlightModeCombo );
     }
 
     highlighterRulesTable_->resizeColumnsToContents();
@@ -1150,7 +1167,11 @@ QList<CrawlerWidget::UnifiedFilterRule> CrawlerWidget::filterRulesFromPanel() co
         rule.useRegex = checked( row, RegexColumn, false );
         rule.ignoreCase = checked( row, IgnoreCaseColumn, false );
         rule.wholeWord = checked( row, WholeWordColumn, false );
-        rule.onlyMatch = checked( row, OnlyMatchColumn, true );
+        if ( const auto* combo
+             = qobject_cast<QComboBox*>( highlighterRulesTable_->cellWidget( row,
+                                                                             HighlightModeColumn ) ) ) {
+            rule.onlyMatch = combo->currentData().toBool();
+        }
         rules.append( rule );
     }
 
@@ -1162,15 +1183,12 @@ void CrawlerWidget::addFilterRule()
     filterRules_ = filterRulesFromPanel();
 
     UnifiedFilterRule rule;
-    rule.pattern = searchLineEdit_->currentText();
-    if ( rule.pattern.isEmpty() ) {
-        rule.pattern = tr( "new filter" );
-    }
     filterRules_.append( rule );
     refreshFilterRulesPanel();
     highlighterRulesTable_->setCurrentCell( filterRules_.size() - 1, PatternColumn );
     highlighterRulesTable_->editItem(
         highlighterRulesTable_->item( filterRules_.size() - 1, PatternColumn ) );
+    applyFilterRules();
 }
 
 void CrawlerWidget::removeSelectedFilterRules()
@@ -1189,6 +1207,38 @@ void CrawlerWidget::removeSelectedFilterRules()
     }
 
     refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::enableAllFilterRules()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    for ( auto& rule : filterRules_ ) {
+        rule.enabled = true;
+    }
+
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::disableAllFilterRules()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    for ( auto& rule : filterRules_ ) {
+        rule.enabled = false;
+    }
+
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::removeAllFilterRules()
+{
+    filterRules_.clear();
+    refreshFilterRulesPanel();
+    applyFilterRules();
 }
 
 void CrawlerWidget::applyFilterRules()
@@ -1365,6 +1415,16 @@ void CrawlerWidget::pickFilterRuleColor( int row, int column )
     }
     filterRules_ = rules;
     refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::filterRuleItemChanged( QTableWidgetItem* item )
+{
+    if ( updatingFilterRulesPanel_ || !item ) {
+        return;
+    }
+
+    applyFilterRules();
 }
 
 //
@@ -1593,7 +1653,7 @@ void CrawlerWidget::setup()
     highlighterRulesTable_->setHorizontalHeaderLabels(
         QStringList{ tr( "Use" ),        tr( "Filter" ), tr( "Highlight" ), tr( "Pattern" ),
                      tr( "Fore" ),       tr( "Back" ),   tr( "Regex" ),     tr( "Ignore case" ),
-                     tr( "Whole word" ), tr( "Only match" ) } );
+                     tr( "Whole word" ), tr( "Highlight mode" ) } );
     highlighterRulesTable_->verticalHeader()->hide();
     highlighterRulesTable_->setSelectionBehavior( QAbstractItemView::SelectRows );
     highlighterRulesTable_->setEditTriggers( QAbstractItemView::DoubleClicked
@@ -1602,10 +1662,13 @@ void CrawlerWidget::setup()
     highlighterRulesTable_->setAlternatingRowColors( true );
     highlighterRulesTable_->horizontalHeader()->setStretchLastSection( true );
     highlighterRulesTable_->setMinimumHeight( 90 );
-    highlighterRulesTable_->setMaximumHeight( 170 );
+    highlighterRulesTable_->setSizePolicy( QSizePolicy::Expanding, QSizePolicy::Expanding );
 
     addFilterRuleButton_ = new QPushButton( tr( "Add" ), this );
     removeFilterRuleButton_ = new QPushButton( tr( "Remove" ), this );
+    enableAllFilterRulesButton_ = new QPushButton( tr( "Enable all" ), this );
+    disableAllFilterRulesButton_ = new QPushButton( tr( "Disable all" ), this );
+    removeAllFilterRulesButton_ = new QPushButton( tr( "Remove all" ), this );
     applyFilterRulesButton_ = new QPushButton( tr( "Apply" ), this );
     saveFilterRulesButton_ = new QPushButton( tr( "Save" ), this );
     loadFilterRulesButton_ = new QPushButton( tr( "Load" ), this );
@@ -1614,15 +1677,18 @@ void CrawlerWidget::setup()
     filterRulesToolbarLayout->setContentsMargins( 0, 0, 0, 0 );
     filterRulesToolbarLayout->addWidget( addFilterRuleButton_ );
     filterRulesToolbarLayout->addWidget( removeFilterRuleButton_ );
+    filterRulesToolbarLayout->addWidget( enableAllFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( disableAllFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( removeAllFilterRulesButton_ );
     filterRulesToolbarLayout->addWidget( applyFilterRulesButton_ );
     filterRulesToolbarLayout->addWidget( saveFilterRulesButton_ );
     filterRulesToolbarLayout->addWidget( loadFilterRulesButton_ );
     filterRulesToolbarLayout->addStretch( 1 );
 
     auto* bottomMainLayout = new QVBoxLayout;
-    bottomMainLayout->addLayout( searchLineLayout );
-    bottomMainLayout->addLayout( filterRulesToolbarLayout );
-    bottomMainLayout->addWidget( highlighterRulesTable_ );
+    bottomMainLayout->addLayout( searchLineLayout, 0 );
+    bottomMainLayout->addLayout( filterRulesToolbarLayout, 0 );
+    bottomMainLayout->addWidget( highlighterRulesTable_, 1 );
     bottomMainLayout->setContentsMargins( 2, 2, 2, 2 );
     bottomWindow->setLayout( bottomMainLayout );
 
@@ -1679,12 +1745,20 @@ void CrawlerWidget::setup()
     connect( addFilterRuleButton_, &QPushButton::clicked, this, &CrawlerWidget::addFilterRule );
     connect( removeFilterRuleButton_, &QPushButton::clicked, this,
              &CrawlerWidget::removeSelectedFilterRules );
+    connect( enableAllFilterRulesButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::enableAllFilterRules );
+    connect( disableAllFilterRulesButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::disableAllFilterRules );
+    connect( removeAllFilterRulesButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::removeAllFilterRules );
     connect( applyFilterRulesButton_, &QPushButton::clicked, this,
              &CrawlerWidget::applyFilterRules );
     connect( saveFilterRulesButton_, &QPushButton::clicked, this, &CrawlerWidget::saveFilterRules );
     connect( loadFilterRulesButton_, &QPushButton::clicked, this, &CrawlerWidget::loadFilterRules );
     connect( highlighterRulesTable_, &QTableWidget::cellDoubleClicked, this,
              &CrawlerWidget::pickFilterRuleColor );
+    connect( highlighterRulesTable_, &QTableWidget::itemChanged, this,
+             &CrawlerWidget::filterRuleItemChanged );
 
     connect( visibilityBox_, QOverload<int>::of( &QComboBox::currentIndexChanged ), this,
              &CrawlerWidget::changeFilteredViewVisibility );
