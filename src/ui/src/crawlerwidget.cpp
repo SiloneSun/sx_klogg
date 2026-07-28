@@ -1997,6 +1997,10 @@ void CrawlerWidget::registerShortcuts()
     const auto& config = Configuration::get();
     const auto& configuredShortcuts = config.shortcuts();
 
+    ShortcutAction::registerShortcut( QStringLiteral( "Ctrl+H" ), shortcuts_, this,
+                                      Qt::WidgetWithChildrenShortcut,
+                                      [ this ]() { togglePrimaryLogView(); } );
+
     ShortcutAction::registerShortcut(
         configuredShortcuts, shortcuts_, this, Qt::WidgetWithChildrenShortcut,
         ShortcutAction::CrawlerChangeVisibilityForward, [ this ]() {
