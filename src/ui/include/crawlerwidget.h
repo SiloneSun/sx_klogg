@@ -45,6 +45,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QColor>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
@@ -72,6 +73,8 @@ class SavedSearches;
 class QStandardItemModel;
 class QCompleter;
 class OverviewWidget;
+class QStackedWidget;
+class QTableWidget;
 
 // Implements the central widget of the application.
 // It includes both windows, the search line, the info
@@ -322,6 +325,19 @@ class CrawlerWidget : public QSplitter,
         bool autoRefreshRequested_;
     };
 
+    struct UnifiedFilterRule {
+        bool enabled = true;
+        bool filterEnabled = true;
+        bool highlightEnabled = true;
+        QString pattern;
+        bool useRegex = false;
+        bool ignoreCase = false;
+        bool wholeWord = false;
+        bool onlyMatch = true;
+        QColor foreColor = Qt::black;
+        QColor backColor = QColor( 255, 255, 0 );
+    };
+
     // Private functions
     void setup();
     void setShortcuts();
@@ -333,6 +349,19 @@ class CrawlerWidget : public QSplitter,
     void updateEncoding();
     void changeTopViewSize( int32_t delta );
     void updatePredefinedFiltersWidget();
+    void togglePrimaryLogView();
+    void showFilteredLogView();
+    void updatePrimaryLogViewButton();
+    void hideLegacySearchControls();
+    void refreshFilterRulesPanel();
+    void loadFilterRulesFromActiveHighlighters();
+    void addFilterRule();
+    void removeSelectedFilterRules();
+    void applyFilterRules();
+    void saveFilterRules();
+    void loadFilterRules();
+    void pickFilterRuleColor( int row, int column );
+    QList<UnifiedFilterRule> filterRulesFromPanel() const;
 
     // Reload predefined filters after changing settings
     void reloadPredefinedFilters() const;
@@ -370,6 +399,13 @@ class CrawlerWidget : public QSplitter,
     FilteredView* filteredView_;
     std::unordered_map<FilteredView*, std::shared_ptr<LogFilteredData>> filteredViewsData_;
     QTabWidget* tabbedFilteredView_;
+    QStackedWidget* primaryLogViewStack_;
+    QTableWidget* highlighterRulesTable_;
+    QPushButton* addFilterRuleButton_;
+    QPushButton* removeFilterRuleButton_;
+    QPushButton* applyFilterRulesButton_;
+    QPushButton* saveFilterRulesButton_;
+    QPushButton* loadFilterRulesButton_;
 
     OverviewWidget* overviewWidget_;
 
@@ -388,6 +424,7 @@ class CrawlerWidget : public QSplitter,
     QToolButton* searchButton_;
     QToolButton* keepSearchResultsButton_;
     QToolButton* stopButton_;
+    QToolButton* primaryLogViewButton_;
 
     QToolButton* matchCaseButton_;
     QToolButton* useRegexpButton_;
@@ -431,6 +468,8 @@ class CrawlerWidget : public QSplitter,
     QString encodingText_;
 
     ColorLabelsManager colorLabelsManager_;
+    QList<UnifiedFilterRule> filterRules_;
+    bool updatingFilterRulesPanel_ = false;
 };
 
 #endif
