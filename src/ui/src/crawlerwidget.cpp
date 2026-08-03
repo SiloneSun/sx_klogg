@@ -51,16 +51,30 @@
 #include <chrono>
 
 #include <QAction>
+#include <QAbstractItemView>
 #include <QApplication>
+#include <QBrush>
+#include <QCheckBox>
+#include <QColorDialog>
 #include <QCompleter>
+#include <QFileDialog>
+#include <QFile>
+#include <QHeaderView>
 #include <QInputDialog>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLineEdit>
 #include <QListView>
+#include <QMessageBox>
 #include <QShortcut>
+#include <QSignalBlocker>
+#include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStringListModel>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <qglobal.h>
 #include <qobject.h>
 #include <string>
@@ -72,6 +86,7 @@
 #include "configuration.h"
 #include "dispatch_to.h"
 #include "fontutils.h"
+#include "highlighterset.h"
 #include "infoline.h"
 #include "quickfindpattern.h"
 #include "savedsearches.h"
@@ -175,18 +190,12 @@ LineNumber CrawlerWidget::getTopLine() const
 
 QString CrawlerWidget::getSelectedText() const
 {
-    if ( filteredView_->hasFocus() )
-        return filteredView_->getSelectedText();
-    else
-        return logMainView_->getSelectedText();
+    return activeView()->getSelectedText();
 }
 
 bool CrawlerWidget::isPartialSelection() const
 {
-    if ( filteredView_->hasFocus() )
-        return filteredView_->isPartialSelection();
-    else
-        return logMainView_->isPartialSelection();
+    return activeView()->isPartialSelection();
 }
 
 void CrawlerWidget::selectAll()
@@ -374,6 +383,8 @@ std::shared_ptr<const ViewContextInterface> CrawlerWidget::doGetViewContext() co
 
 void CrawlerWidget::startNewSearch()
 {
+    showFilteredLogView();
+
     if ( keepSearchResultsButton_->isChecked() ) {
         keepSearchResultsButton_->setChecked( false );
 
@@ -494,6 +505,7 @@ void CrawlerWidget::updateFilteredView( LinesCount nbMatches, int progress,
         stopButton_->hide();
         searchButton_->show();
         clearButton_->show();
+        hideLegacySearchControls();
     }
     else {
         // Search in progress
@@ -665,6 +677,7 @@ void CrawlerWidget::applyConfiguration()
     }
 
     reloadPredefinedFilters();
+    refreshFilterRulesPanel();
 }
 
 void CrawlerWidget::enteringQuickFind()
@@ -767,12 +780,17 @@ AbstractLogView* CrawlerWidget::activeView() const
 
     if ( activeView ) {
         auto* view = qobject_cast<AbstractLogView*>( activeView );
-        return view;
+        if ( view ) {
+            return view;
+        }
     }
-    else {
-        LOG_WARNING << "No active view, defaulting to logMainView";
-        return logMainView_;
+
+    if ( primaryLogViewStack_ && primaryLogViewStack_->currentWidget() == tabbedFilteredView_ ) {
+        return filteredView_;
     }
+
+    LOG_WARNING << "No active view, defaulting to logMainView";
+    return logMainView_;
 }
 
 void CrawlerWidget::searchForward()
@@ -949,6 +967,506 @@ void CrawlerWidget::clearSearchLimits()
     setSearchLimits( 0_lnum, LineNumber( logData_->getNbLine().get() ) );
 }
 
+void CrawlerWidget::togglePrimaryLogView()
+{
+    if ( !primaryLogViewStack_ ) {
+        return;
+    }
+
+    if ( primaryLogViewStack_->currentWidget() == tabbedFilteredView_ ) {
+        primaryLogViewStack_->setCurrentWidget( logMainView_ );
+        logMainView_->setFocus();
+    }
+    else {
+        showFilteredLogView();
+    }
+
+    updatePrimaryLogViewButton();
+}
+
+void CrawlerWidget::showFilteredLogView()
+{
+    if ( primaryLogViewStack_ && primaryLogViewStack_->currentWidget() != tabbedFilteredView_ ) {
+        primaryLogViewStack_->setCurrentWidget( tabbedFilteredView_ );
+    }
+
+    if ( filteredView_ ) {
+        filteredView_->setFocus();
+    }
+
+    updatePrimaryLogViewButton();
+}
+
+void CrawlerWidget::updatePrimaryLogViewButton()
+{
+    if ( !primaryLogViewButton_ || !primaryLogViewStack_ ) {
+        return;
+    }
+
+    const bool showingFullLog = primaryLogViewStack_->currentWidget() == logMainView_;
+    primaryLogViewButton_->setChecked( showingFullLog );
+    primaryLogViewButton_->setText( showingFullLog ? tr( "Full Log" ) : tr( "Filtered Log" ) );
+    primaryLogViewButton_->setToolTip(
+        showingFullLog ? tr( "Show filtered log" ) : tr( "Show full log" ) );
+}
+
+void CrawlerWidget::hideLegacySearchControls()
+{
+    matchCaseButton_->hide();
+    useRegexpButton_->hide();
+    inverseButton_->hide();
+    booleanButton_->hide();
+    searchRefreshButton_->hide();
+    predefinedFilters_->hide();
+    searchLineEdit_->hide();
+    clearButton_->hide();
+    searchButton_->hide();
+    keepSearchResultsButton_->hide();
+}
+
+namespace {
+enum FilterRuleColumn {
+    EnabledColumn = 0,
+    FilterColumn,
+    HighlightColumn,
+    PatternColumn,
+    ForeColorColumn,
+    BackColorColumn,
+    RegexColumn,
+    IgnoreCaseColumn,
+    WholeWordColumn,
+    HighlightModeColumn,
+    FilterRuleColumnCount
+};
+
+constexpr char UnifiedFilterSetName[] = "SX Unified Filter Rules";
+
+QTableWidgetItem* makeCheckItem( bool checked )
+{
+    auto* item = new QTableWidgetItem;
+    item->setFlags( Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable );
+    item->setCheckState( checked ? Qt::Checked : Qt::Unchecked );
+    item->setTextAlignment( Qt::AlignCenter );
+    return item;
+}
+
+QTableWidgetItem* makeColorItem( const QColor& color )
+{
+    auto* item = new QTableWidgetItem( color.name( QColor::HexArgb ) );
+    item->setBackground( QBrush( color ) );
+    item->setData( Qt::UserRole, color );
+    return item;
+}
+
+QComboBox* makeHighlightModeCombo( bool keywordOnly )
+{
+    auto* combo = new QComboBox;
+    combo->addItem( QObject::tr( "Keyword" ), true );
+    combo->addItem( QObject::tr( "Whole line" ), false );
+    combo->setCurrentIndex( keywordOnly ? 0 : 1 );
+    return combo;
+}
+}
+
+void CrawlerWidget::refreshFilterRulesPanel()
+{
+    if ( !highlighterRulesTable_ ) {
+        return;
+    }
+
+    const QSignalBlocker blocker( highlighterRulesTable_ );
+    updatingFilterRulesPanel_ = true;
+
+    highlighterRulesTable_->setRowCount( filterRules_.size() );
+
+    for ( int row = 0; row < filterRules_.size(); ++row ) {
+        const auto& rule = filterRules_.at( row );
+
+        highlighterRulesTable_->setItem( row, EnabledColumn, makeCheckItem( rule.enabled ) );
+        highlighterRulesTable_->setItem( row, FilterColumn, makeCheckItem( rule.filterEnabled ) );
+        highlighterRulesTable_->setItem( row, HighlightColumn,
+                                         makeCheckItem( rule.highlightEnabled ) );
+
+        auto* patternItem = new QTableWidgetItem( rule.pattern );
+        patternItem->setForeground( QBrush( rule.foreColor ) );
+        patternItem->setBackground( QBrush( rule.backColor ) );
+        highlighterRulesTable_->setItem( row, PatternColumn, patternItem );
+
+        highlighterRulesTable_->setItem( row, ForeColorColumn, makeColorItem( rule.foreColor ) );
+        highlighterRulesTable_->setItem( row, BackColorColumn, makeColorItem( rule.backColor ) );
+        highlighterRulesTable_->setItem( row, RegexColumn, makeCheckItem( rule.useRegex ) );
+        highlighterRulesTable_->setItem( row, IgnoreCaseColumn, makeCheckItem( rule.ignoreCase ) );
+        highlighterRulesTable_->setItem( row, WholeWordColumn, makeCheckItem( rule.wholeWord ) );
+
+        auto* highlightModeCombo = makeHighlightModeCombo( rule.onlyMatch );
+        connect( highlightModeCombo, QOverload<int>::of( &QComboBox::currentIndexChanged ), this,
+                 [ this ]( int ) {
+                     if ( !updatingFilterRulesPanel_ ) {
+                         applyFilterRules();
+                     }
+                 } );
+        highlighterRulesTable_->setCellWidget( row, HighlightModeColumn, highlightModeCombo );
+    }
+
+    highlighterRulesTable_->resizeColumnsToContents();
+    highlighterRulesTable_->horizontalHeader()->setSectionResizeMode( PatternColumn,
+                                                                      QHeaderView::Stretch );
+    updatingFilterRulesPanel_ = false;
+}
+
+void CrawlerWidget::loadFilterRulesFromActiveHighlighters()
+{
+    filterRules_.clear();
+
+    const auto& highlighters = HighlighterSetCollection::get().currentActiveSet().highlighters();
+    for ( const auto& highlighter : highlighters ) {
+        UnifiedFilterRule rule;
+        rule.pattern = highlighter.pattern();
+        rule.useRegex = highlighter.useRegex();
+        rule.ignoreCase = highlighter.ignoreCase();
+        rule.onlyMatch = highlighter.highlightOnlyMatch();
+        rule.foreColor = highlighter.foreColor();
+        rule.backColor = highlighter.backColor();
+        filterRules_.append( rule );
+    }
+
+    refreshFilterRulesPanel();
+}
+
+QList<CrawlerWidget::UnifiedFilterRule> CrawlerWidget::filterRulesFromPanel() const
+{
+    QList<UnifiedFilterRule> rules;
+
+    if ( !highlighterRulesTable_ ) {
+        return rules;
+    }
+
+    const auto checked = [ this ]( int row, int column, bool fallback ) {
+        const auto* item = highlighterRulesTable_->item( row, column );
+        return item ? item->checkState() == Qt::Checked : fallback;
+    };
+    const auto color = [ this ]( int row, int column, const QColor& fallback ) {
+        const auto* item = highlighterRulesTable_->item( row, column );
+        const auto stored = item ? item->data( Qt::UserRole ) : QVariant{};
+        if ( stored.canConvert<QColor>() ) {
+            return stored.value<QColor>();
+        }
+        return item ? QColor( item->text() ) : fallback;
+    };
+
+    for ( int row = 0; row < highlighterRulesTable_->rowCount(); ++row ) {
+        UnifiedFilterRule rule;
+        rule.enabled = checked( row, EnabledColumn, true );
+        rule.filterEnabled = checked( row, FilterColumn, true );
+        rule.highlightEnabled = checked( row, HighlightColumn, true );
+        rule.pattern = highlighterRulesTable_->item( row, PatternColumn )
+                           ? highlighterRulesTable_->item( row, PatternColumn )->text()
+                           : QString{};
+        rule.foreColor = color( row, ForeColorColumn, Qt::black );
+        rule.backColor = color( row, BackColorColumn, QColor( 255, 255, 0 ) );
+        rule.useRegex = checked( row, RegexColumn, false );
+        rule.ignoreCase = checked( row, IgnoreCaseColumn, false );
+        rule.wholeWord = checked( row, WholeWordColumn, false );
+        if ( const auto* combo
+             = qobject_cast<QComboBox*>( highlighterRulesTable_->cellWidget( row,
+                                                                             HighlightModeColumn ) ) ) {
+            rule.onlyMatch = combo->currentData().toBool();
+        }
+        rules.append( rule );
+    }
+
+    return rules;
+}
+
+void CrawlerWidget::addFilterRule()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    UnifiedFilterRule rule;
+    filterRules_.append( rule );
+    refreshFilterRulesPanel();
+    highlighterRulesTable_->setCurrentCell( filterRules_.size() - 1, PatternColumn );
+    highlighterRulesTable_->editItem(
+        highlighterRulesTable_->item( filterRules_.size() - 1, PatternColumn ) );
+    applyFilterRules();
+}
+
+void CrawlerWidget::removeSelectedFilterRules()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    QList<int> rows;
+    for ( const auto& index : highlighterRulesTable_->selectionModel()->selectedRows() ) {
+        rows.append( index.row() );
+    }
+    std::sort( rows.begin(), rows.end(), std::greater<int>() );
+    for ( const auto row : rows ) {
+        if ( row >= 0 && row < filterRules_.size() ) {
+            filterRules_.removeAt( row );
+        }
+    }
+
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::moveSelectedFilterRuleUp()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    const auto selectedRows = highlighterRulesTable_->selectionModel()->selectedRows();
+    if ( selectedRows.isEmpty() ) {
+        return;
+    }
+
+    const int row = selectedRows.first().row();
+    if ( row <= 0 || row >= filterRules_.size() ) {
+        return;
+    }
+
+    std::swap( filterRules_[ row ], filterRules_[ row - 1 ] );
+    refreshFilterRulesPanel();
+    highlighterRulesTable_->selectRow( row - 1 );
+    applyFilterRules();
+}
+
+void CrawlerWidget::moveSelectedFilterRuleDown()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    const auto selectedRows = highlighterRulesTable_->selectionModel()->selectedRows();
+    if ( selectedRows.isEmpty() ) {
+        return;
+    }
+
+    const int row = selectedRows.first().row();
+    if ( row < 0 || row >= filterRules_.size() - 1 ) {
+        return;
+    }
+
+    std::swap( filterRules_[ row ], filterRules_[ row + 1 ] );
+    refreshFilterRulesPanel();
+    highlighterRulesTable_->selectRow( row + 1 );
+    applyFilterRules();
+}
+
+void CrawlerWidget::enableAllFilterRules()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    for ( auto& rule : filterRules_ ) {
+        rule.enabled = true;
+    }
+
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::disableAllFilterRules()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    for ( auto& rule : filterRules_ ) {
+        rule.enabled = false;
+    }
+
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::removeAllFilterRules()
+{
+    filterRules_.clear();
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::applyFilterRules()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    QList<Highlighter> highlighters;
+    QStringList filterPatterns;
+    for ( const auto& rule : klogg::as_const( filterRules_ ) ) {
+        if ( !rule.enabled || rule.pattern.isEmpty() ) {
+            continue;
+        }
+
+        QString filterPattern
+            = rule.useRegex ? rule.pattern : QRegularExpression::escape( rule.pattern );
+        if ( rule.wholeWord ) {
+            filterPattern = QStringLiteral( "\\b(%1)\\b" ).arg( filterPattern );
+        }
+
+        if ( rule.filterEnabled ) {
+            filterPatterns.append( filterPattern );
+        }
+
+        if ( rule.highlightEnabled ) {
+            Highlighter highlighter( rule.pattern, rule.ignoreCase, rule.onlyMatch, rule.foreColor,
+                                     rule.backColor );
+            highlighter.setUseRegex( rule.useRegex || rule.wholeWord );
+            if ( rule.wholeWord && !rule.useRegex ) {
+                highlighter.setPattern(
+                    QStringLiteral( "\\b(%1)\\b" )
+                        .arg( QRegularExpression::escape( rule.pattern ) ) );
+            }
+            highlighters.append( highlighter );
+        }
+    }
+
+    auto& highlighterCollection = HighlighterSetCollection::get();
+    auto sets = highlighterCollection.highlighterSets();
+    sets.erase( std::remove_if( sets.begin(), sets.end(), []( const HighlighterSet& set ) {
+                    return set.name() == QLatin1String( UnifiedFilterSetName );
+                } ),
+                sets.end() );
+
+    auto unifiedSet = HighlighterSet::createNewSet( UnifiedFilterSetName );
+    unifiedSet.setHighlighters( highlighters );
+    const auto unifiedSetId = unifiedSet.id();
+    sets.append( unifiedSet );
+    highlighterCollection.setHighlighterSets( sets );
+    highlighterCollection.deactivateAll();
+    highlighterCollection.activateSet( unifiedSetId );
+    highlighterCollection.save();
+
+    logMainView_->update();
+    for ( auto i = 0; i < tabbedFilteredView_->count(); ++i ) {
+        if ( auto* fv = qobject_cast<FilteredView*>( tabbedFilteredView_->widget( i ) ) ) {
+            fv->update();
+        }
+    }
+
+    useRegexpButton_->setChecked( true );
+    booleanButton_->setChecked( false );
+    matchCaseButton_->setChecked(
+        std::none_of( filterRules_.cbegin(), filterRules_.cend(), []( const auto& rule ) {
+            return rule.enabled && rule.filterEnabled && rule.ignoreCase;
+        } ) );
+    searchLineEdit_->setEditText( filterPatterns.join( '|' ) );
+    updatePredefinedFiltersWidget();
+    startNewSearch();
+}
+
+void CrawlerWidget::saveFilterRules()
+{
+    filterRules_ = filterRulesFromPanel();
+
+    const auto fileName = QFileDialog::getSaveFileName(
+        this, tr( "Save filter rules" ), QString{}, tr( "Filter rules (*.json)" ) );
+    if ( fileName.isEmpty() ) {
+        return;
+    }
+
+    QJsonArray rules;
+    for ( const auto& rule : klogg::as_const( filterRules_ ) ) {
+        QJsonObject object;
+        object[ "enabled" ] = rule.enabled;
+        object[ "filterEnabled" ] = rule.filterEnabled;
+        object[ "highlightEnabled" ] = rule.highlightEnabled;
+        object[ "pattern" ] = rule.pattern;
+        object[ "useRegex" ] = rule.useRegex;
+        object[ "ignoreCase" ] = rule.ignoreCase;
+        object[ "wholeWord" ] = rule.wholeWord;
+        object[ "onlyMatch" ] = rule.onlyMatch;
+        object[ "foreColor" ] = rule.foreColor.name( QColor::HexArgb );
+        object[ "backColor" ] = rule.backColor.name( QColor::HexArgb );
+        rules.append( object );
+    }
+
+    QJsonObject root;
+    root[ "version" ] = 1;
+    root[ "name" ] = UnifiedFilterSetName;
+    root[ "rules" ] = rules;
+
+    QFile file( fileName );
+    if ( !file.open( QIODevice::WriteOnly | QIODevice::Truncate ) ) {
+        QMessageBox::warning( this, tr( "Save filter rules" ),
+                              tr( "Cannot write filter rules file." ) );
+        return;
+    }
+    file.write( QJsonDocument( root ).toJson( QJsonDocument::Indented ) );
+}
+
+void CrawlerWidget::loadFilterRules()
+{
+    const auto fileName = QFileDialog::getOpenFileName(
+        this, tr( "Load filter rules" ), QString{}, tr( "Filter rules (*.json)" ) );
+    if ( fileName.isEmpty() ) {
+        return;
+    }
+
+    QFile file( fileName );
+    if ( !file.open( QIODevice::ReadOnly ) ) {
+        QMessageBox::warning( this, tr( "Load filter rules" ),
+                              tr( "Cannot read filter rules file." ) );
+        return;
+    }
+
+    const auto document = QJsonDocument::fromJson( file.readAll() );
+    const auto rules = document.object().value( "rules" ).toArray();
+    QList<UnifiedFilterRule> loadedRules;
+    for ( const auto& value : rules ) {
+        const auto object = value.toObject();
+        UnifiedFilterRule rule;
+        rule.enabled = object.value( "enabled" ).toBool( true );
+        rule.filterEnabled = object.value( "filterEnabled" ).toBool( true );
+        rule.highlightEnabled = object.value( "highlightEnabled" ).toBool( true );
+        rule.pattern = object.value( "pattern" ).toString();
+        rule.useRegex = object.value( "useRegex" ).toBool( false );
+        rule.ignoreCase = object.value( "ignoreCase" ).toBool( false );
+        rule.wholeWord = object.value( "wholeWord" ).toBool( false );
+        rule.onlyMatch = object.value( "onlyMatch" ).toBool( true );
+        rule.foreColor = QColor( object.value( "foreColor" ).toString( "#ff000000" ) );
+        rule.backColor = QColor( object.value( "backColor" ).toString( "#ffffff00" ) );
+        loadedRules.append( rule );
+    }
+
+    filterRules_ = loadedRules;
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::pickFilterRuleColor( int row, int column )
+{
+    if ( column != ForeColorColumn && column != BackColorColumn ) {
+        return;
+    }
+
+    auto rules = filterRulesFromPanel();
+    if ( row < 0 || row >= rules.size() ) {
+        return;
+    }
+
+    const auto initialColor
+        = column == ForeColorColumn ? rules.at( row ).foreColor : rules.at( row ).backColor;
+    const auto color = QColorDialog::getColor( initialColor, this, tr( "Select color" ),
+                                               QColorDialog::ShowAlphaChannel );
+    if ( !color.isValid() ) {
+        return;
+    }
+
+    if ( column == ForeColorColumn ) {
+        rules[ row ].foreColor = color;
+    }
+    else {
+        rules[ row ].backColor = color;
+    }
+    filterRules_ = rules;
+    refreshFilterRulesPanel();
+    applyFilterRules();
+}
+
+void CrawlerWidget::filterRuleItemChanged( QTableWidgetItem* item )
+{
+    if ( updatingFilterRulesPanel_ || !item ) {
+        return;
+    }
+
+    applyFilterRules();
+}
+
 //
 // Private functions
 //
@@ -1122,11 +1640,18 @@ void CrawlerWidget::setup()
     stopButton_->setVisible( false );
     stopButton_->setContentsMargins( 2, 2, 2, 2 );
 
+    primaryLogViewButton_ = new QToolButton();
+    primaryLogViewButton_->setCheckable( true );
+    primaryLogViewButton_->setAutoRaise( true );
+    primaryLogViewButton_->setFocusPolicy( Qt::NoFocus );
+    primaryLogViewButton_->setContentsMargins( 2, 2, 2, 2 );
+
     predefinedFilters_ = new PredefinedFiltersComboBox( this );
 
     auto* searchLineLayout = new QHBoxLayout;
     searchLineLayout->setContentsMargins( 2, 2, 2, 2 );
 
+    searchLineLayout->addWidget( primaryLogViewButton_ );
     searchLineLayout->addWidget( visibilityBox_ );
     searchLineLayout->addWidget( matchCaseButton_ );
     searchLineLayout->addWidget( useRegexpButton_ );
@@ -1141,6 +1666,17 @@ void CrawlerWidget::setup()
     searchLineLayout->addWidget( stopButton_ );
     searchLineLayout->addWidget( searchInfoLine_ );
 
+    matchCaseButton_->hide();
+    useRegexpButton_->hide();
+    inverseButton_->hide();
+    booleanButton_->hide();
+    searchRefreshButton_->hide();
+    predefinedFilters_->hide();
+    searchLineEdit_->hide();
+    clearButton_->hide();
+    searchButton_->hide();
+    keepSearchResultsButton_->hide();
+
     // Construct the bottom window
     tabbedFilteredView_ = new QTabWidget;
     tabbedFilteredView_->setTabsClosable( true );
@@ -1148,14 +1684,62 @@ void CrawlerWidget::setup()
     tabbedFilteredView_->setDocumentMode( true );
     tabbedFilteredView_->setTabBarAutoHide( true );
 
+    primaryLogViewStack_ = new QStackedWidget;
+    primaryLogViewStack_->addWidget( tabbedFilteredView_ );
+    primaryLogViewStack_->addWidget( logMainView_ );
+    primaryLogViewStack_->setCurrentWidget( tabbedFilteredView_ );
+
+    highlighterRulesTable_ = new QTableWidget( 0, FilterRuleColumnCount, this );
+    highlighterRulesTable_->setHorizontalHeaderLabels(
+        QStringList{ tr( "Use" ),        tr( "Filter" ), tr( "Highlight" ), tr( "Pattern" ),
+                     tr( "Fore" ),       tr( "Back" ),   tr( "Regex" ),     tr( "Ignore case" ),
+                     tr( "Whole word" ), tr( "Highlight mode" ) } );
+    highlighterRulesTable_->verticalHeader()->hide();
+    highlighterRulesTable_->setSelectionBehavior( QAbstractItemView::SelectRows );
+    highlighterRulesTable_->setEditTriggers( QAbstractItemView::DoubleClicked
+                                             | QAbstractItemView::EditKeyPressed
+                                             | QAbstractItemView::SelectedClicked );
+    highlighterRulesTable_->setAlternatingRowColors( true );
+    highlighterRulesTable_->horizontalHeader()->setStretchLastSection( true );
+    highlighterRulesTable_->setMinimumHeight( 90 );
+    highlighterRulesTable_->setSizePolicy( QSizePolicy::Expanding, QSizePolicy::Expanding );
+
+    addFilterRuleButton_ = new QPushButton( tr( "Add" ), this );
+    removeFilterRuleButton_ = new QPushButton( tr( "Remove" ), this );
+    moveFilterRuleUpButton_ = new QPushButton( tr( "Move up" ), this );
+    moveFilterRuleDownButton_ = new QPushButton( tr( "Move down" ), this );
+    enableAllFilterRulesButton_ = new QPushButton( tr( "Enable all" ), this );
+    disableAllFilterRulesButton_ = new QPushButton( tr( "Disable all" ), this );
+    removeAllFilterRulesButton_ = new QPushButton( tr( "Remove all" ), this );
+    applyFilterRulesButton_ = new QPushButton( tr( "Apply" ), this );
+    saveFilterRulesButton_ = new QPushButton( tr( "Save" ), this );
+    loadFilterRulesButton_ = new QPushButton( tr( "Load" ), this );
+
+    auto* filterRulesToolbarLayout = new QHBoxLayout;
+    filterRulesToolbarLayout->setContentsMargins( 0, 0, 0, 0 );
+    filterRulesToolbarLayout->addWidget( addFilterRuleButton_ );
+    filterRulesToolbarLayout->addWidget( removeFilterRuleButton_ );
+    filterRulesToolbarLayout->addWidget( moveFilterRuleUpButton_ );
+    filterRulesToolbarLayout->addWidget( moveFilterRuleDownButton_ );
+    filterRulesToolbarLayout->addWidget( enableAllFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( disableAllFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( removeAllFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( applyFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( saveFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( loadFilterRulesButton_ );
+    filterRulesToolbarLayout->addStretch( 1 );
+
     auto* bottomMainLayout = new QVBoxLayout;
-    bottomMainLayout->addLayout( searchLineLayout );
-    bottomMainLayout->addWidget( tabbedFilteredView_ );
+    bottomMainLayout->addLayout( searchLineLayout, 0 );
+    bottomMainLayout->addLayout( filterRulesToolbarLayout, 0 );
+    bottomMainLayout->addWidget( highlighterRulesTable_, 1 );
     bottomMainLayout->setContentsMargins( 2, 2, 2, 2 );
     bottomWindow->setLayout( bottomMainLayout );
 
-    addWidget( logMainView_ );
+    addWidget( primaryLogViewStack_ );
     addWidget( bottomWindow );
+    setStretchFactor( 0, 1 );
+    setStretchFactor( 1, 0 );
 
     // Default search checkboxes
     auto& config = Configuration::get();
@@ -1175,6 +1759,7 @@ void CrawlerWidget::setup()
 
     registerShortcuts();
     loadIcons();
+    loadFilterRulesFromActiveHighlighters();
 
     // Connect the signals
     connect( searchLineEdit_->lineEdit(), &QLineEdit::returnPressed, searchButton_,
@@ -1199,6 +1784,29 @@ void CrawlerWidget::setup()
     connect( searchButton_, &QToolButton::clicked, this, &CrawlerWidget::startNewSearch );
     connect( stopButton_, &QToolButton::clicked, this, &CrawlerWidget::stopSearch );
     connect( clearButton_, &QToolButton::clicked, searchLineEdit_, &QComboBox::clearEditText );
+    connect( primaryLogViewButton_, &QToolButton::clicked, this,
+             &CrawlerWidget::togglePrimaryLogView );
+    connect( addFilterRuleButton_, &QPushButton::clicked, this, &CrawlerWidget::addFilterRule );
+    connect( removeFilterRuleButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::removeSelectedFilterRules );
+    connect( moveFilterRuleUpButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::moveSelectedFilterRuleUp );
+    connect( moveFilterRuleDownButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::moveSelectedFilterRuleDown );
+    connect( enableAllFilterRulesButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::enableAllFilterRules );
+    connect( disableAllFilterRulesButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::disableAllFilterRules );
+    connect( removeAllFilterRulesButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::removeAllFilterRules );
+    connect( applyFilterRulesButton_, &QPushButton::clicked, this,
+             &CrawlerWidget::applyFilterRules );
+    connect( saveFilterRulesButton_, &QPushButton::clicked, this, &CrawlerWidget::saveFilterRules );
+    connect( loadFilterRulesButton_, &QPushButton::clicked, this, &CrawlerWidget::loadFilterRules );
+    connect( highlighterRulesTable_, &QTableWidget::cellDoubleClicked, this,
+             &CrawlerWidget::pickFilterRuleColor );
+    connect( highlighterRulesTable_, &QTableWidget::itemChanged, this,
+             &CrawlerWidget::filterRuleItemChanged );
 
     connect( visibilityBox_, QOverload<int>::of( &QComboBox::currentIndexChanged ), this,
              &CrawlerWidget::changeFilteredViewVisibility );
@@ -1297,6 +1905,8 @@ void CrawlerWidget::setup()
     if ( defaultEncodingMib >= 0 ) {
         encodingMib_ = defaultEncodingMib;
     }
+    updatePrimaryLogViewButton();
+    refreshFilterRulesPanel();
     updatePredefinedFiltersWidget();
 }
 
@@ -1434,6 +2044,10 @@ void CrawlerWidget::registerShortcuts()
 
     const auto& config = Configuration::get();
     const auto& configuredShortcuts = config.shortcuts();
+
+    ShortcutAction::registerShortcut( QStringLiteral( "Ctrl+H" ), shortcuts_, this,
+                                      Qt::WidgetWithChildrenShortcut,
+                                      [ this ]() { togglePrimaryLogView(); } );
 
     ShortcutAction::registerShortcut(
         configuredShortcuts, shortcuts_, this, Qt::WidgetWithChildrenShortcut,

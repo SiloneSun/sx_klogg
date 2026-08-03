@@ -6,6 +6,7 @@ Icon=klogg
 Type=Application
 Comment=A smart interactive log explorer.
 Terminal=false
+StartupWMClass=klogg
 Categories=Qt;Utility;TextTools;Development;
 MimeType=text/plain;
 Actions=Session;NewInstance;

@@ -941,6 +941,15 @@ void AbstractLogView::wheelEvent( QWheelEvent* wheelEvent )
         return;
     }
 
+    if ( wheelEvent->modifiers().testFlag( Qt::ShiftModifier ) ) {
+        const auto horizontalDelta = pixelDelta.isNull()
+                                         ? wheelEvent->angleDelta().y() / 3
+                                         : pixelDelta.y() / 3;
+        horizontalScrollBar()->setValue( horizontalScrollBar()->value() - horizontalDelta );
+        wheelEvent->accept();
+        return;
+    }
+
     // LOG_DEBUG << "wheelEvent";
 
     // This is to handle the case where follow mode is on, but the user
