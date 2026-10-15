@@ -1,0 +1,66 @@
+{
+    "name": "SX Unified Filter Rules",
+    "rules": [
+        {
+            "backColor": "#ffffff00",
+            "enabled": true,
+            "filterEnabled": true,
+            "foreColor": "#ff000000",
+            "highlightEnabled": true,
+            "ignoreCase": false,
+            "onlyMatch": true,
+            "pattern": "setSclParam",
+            "useRegex": false,
+            "wholeWord": false
+        },
+        {
+            "backColor": "#ffffff00",
+            "enabled": true,
+            "filterEnabled": true,
+            "foreColor": "#ff000000",
+            "highlightEnabled": true,
+            "ignoreCase": false,
+            "onlyMatch": true,
+            "pattern": "validRegion",
+            "useRegex": false,
+            "wholeWord": false
+        },
+        {
+            "backColor": "#ffffff00",
+            "enabled": true,
+            "filterEnabled": true,
+            "foreColor": "#ff000000",
+            "highlightEnabled": true,
+            "ignoreCase": false,
+            "onlyMatch": true,
+            "pattern": "chn:2",
+            "useRegex": false,
+            "wholeWord": false
+        },
+        {
+            "backColor": "#ffffff00",
+            "enabled": true,
+            "filterEnabled": true,
+            "foreColor": "#ff000000",
+            "highlightEnabled": true,
+            "ignoreCase": false,
+            "onlyMatch": true,
+            "pattern": "crop(x",
+            "useRegex": false,
+            "wholeWord": false
+        },
+        {
+            "backColor": "#ffffff00",
+            "enabled": true,
+            "filterEnabled": true,
+            "foreColor": "#ff000000",
+            "highlightEnabled": true,
+            "ignoreCase": false,
+            "onlyMatch": true,
+            "pattern": "ret=:",
+            "useRegex": false,
+            "wholeWord": false
+        }
+    ],
+    "version": 1
+}

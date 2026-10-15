@@ -86,6 +86,7 @@
 #include "active_screen.h"
 #include "clipboard.h"
 #include "configuration.h"
+#include "customscriptrunner.h"
 #include "highlighterset.h"
 #include "highlightersmenu.h"
 #include "log.h"
@@ -622,6 +623,7 @@ void AbstractLogView::mousePressEvent( QMouseEvent* mouseEvent )
                      &AbstractLogView::clearColorLabels );
         }
         // Display the popup (blocking)
+        rebuildCustomScriptsMenu();
         popupMenu_->exec( QCursor::pos( activeScreen( this ) ) );
 
         highlightersMenu_->clearHighlightersMenu();
@@ -2099,6 +2101,7 @@ void AbstractLogView::createMenu()
     highlightersMenu_ = new HighlightersMenu( tr( "Highlighters" ) );
     popupMenu_->addMenu( highlightersMenu_ );
     colorLabelsMenu_ = popupMenu_->addMenu( tr( "Color labels" ) );
+    customScriptsMenu_ = popupMenu_->addMenu( tr( "Custom scripts" ) );
 
     popupMenu_->addSeparator();
     popupMenu_->addAction( markAction_ );
@@ -2125,6 +2128,33 @@ void AbstractLogView::createMenu()
     popupMenu_->addAction( saveDefaultSplitterSizesAction_ );
     popupMenu_->addAction( saveToFileAction_ );
     popupMenu_->addAction( saveSelectedToFileAction_ );
+}
+
+void AbstractLogView::rebuildCustomScriptsMenu()
+{
+    customScriptsMenu_->clear();
+
+    const auto scriptsFolder = Configuration::get().customScriptsPath();
+    const auto scripts = CustomScriptRunner::enumerateScripts( scriptsFolder );
+    if ( scripts.empty() ) {
+        auto* emptyAction = customScriptsMenu_->addAction( tr( "(no scripts found)" ) );
+        emptyAction->setEnabled( false );
+        return;
+    }
+
+    for ( const auto& scriptPath : scripts ) {
+        const auto scriptName = QFileInfo( scriptPath ).completeBaseName();
+        auto* scriptAction = customScriptsMenu_->addAction( scriptName );
+        connect( scriptAction, &QAction::triggered, this, [ this, scriptPath ]() {
+            const auto selectedText = selection_.getSelectedText( logData_ );
+            if ( selectedText.isEmpty() ) {
+                return;
+            }
+            // Runner deletes itself once the script process finishes.
+            auto* runner = new CustomScriptRunner( scriptPath, selectedText, this );
+            runner->start();
+        } );
+    }
 }
 
 void AbstractLogView::considerMouseHovering( int xPos, int yPos )

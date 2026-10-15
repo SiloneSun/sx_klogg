@@ -38,6 +38,7 @@
 
 #include <QColorDialog>
 #include <QKeySequenceEdit>
+#include <QFileDialog>
 #include <QMessageBox>
 #include <QToolButton>
 #include <QtGui>
@@ -86,6 +87,14 @@ OptionsDialog::OptionsDialog( QWidget* parent )
 
     connect( mainSearchColorButton, &QPushButton::clicked, this, &OptionsDialog::changeMainColor );
     connect( quickFindColorButton, &QPushButton::clicked, this, &OptionsDialog::changeQfColor );
+
+    connect( customScriptsPathBrowseButton, &QToolButton::clicked, this, [ this ]() {
+        const auto dir = QFileDialog::getExistingDirectory(
+            this, tr( "Select custom scripts folder" ), customScriptsPathLineEdit->text() );
+        if ( !dir.isEmpty() ) {
+            customScriptsPathLineEdit->setText( dir );
+        }
+    } );
 
     connect( restoreShortcutsDefaults, &QPushButton::clicked, this, [ this ]() {
         auto ret = QMessageBox::question(
@@ -302,6 +311,7 @@ void OptionsDialog::updateDialogFromConfig()
     fontSmoothCheckBox->setChecked( config.forceFontAntialiasing() );
     boldFontCheckBox->setChecked( config.useBoldFont() );
     wrapTextCheckBox->setChecked( config.useTextWrap() );
+    customScriptsPathLineEdit->setText( config.customScriptsPath() );
     enableQtHiDpiCheckBox->setChecked( config.enableQtHighDpi() );
     scaleRoundingComboBox->setCurrentIndex( config.scaleFactorRounding() - 1 );
 
@@ -493,6 +503,7 @@ void OptionsDialog::updateConfigFromDialog()
     config.setForceFontAntialiasing( fontSmoothCheckBox->isChecked() );
     config.setUseBoldFont( boldFontCheckBox->isChecked() );
     config.setUseTextWrap( wrapTextCheckBox->isChecked() );
+    config.setCustomScriptsPath( customScriptsPathLineEdit->text().trimmed() );
     config.setEnableQtHighDpi( enableQtHiDpiCheckBox->isChecked() );
     config.setScaleFactorRounding( scaleRoundingComboBox->currentIndex() + 1 );
 

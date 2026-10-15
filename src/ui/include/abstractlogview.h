@@ -387,6 +387,7 @@ class AbstractLogView : public QAbstractScrollArea, public SearchableWidgetInter
 
     // Popup menu
     QMenu* popupMenu_;
+    QMenu* customScriptsMenu_;
     QAction* copyAction_;
     QAction* copyWithLineNumbersAction_;
     QAction* markAction_;
@@ -461,6 +462,7 @@ class AbstractLogView : public QAbstractScrollArea, public SearchableWidgetInter
     void updateSearchLimits();
 
     void createMenu();
+    void rebuildCustomScriptsMenu();
 
     void considerMouseHovering( int xPos, int yPos );
 

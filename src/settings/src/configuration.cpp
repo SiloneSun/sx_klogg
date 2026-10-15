@@ -281,6 +281,10 @@ void Configuration::retrieveFromStorage( QSettings& settings )
 
     useTextWrap_ = settings.value( "view.textWrap", DefaultConfiguration.useTextWrap() ).toBool();
 
+    customScriptsPath_
+        = settings.value( "view.customScriptsPath", DefaultConfiguration.customScriptsPath_ )
+              .toString();
+
     style_ = settings.value( "view.style", DefaultConfiguration.style_ ).toString();
 
     auto styles = StyleManager::availableStyles();
@@ -412,6 +416,7 @@ void Configuration::saveToStorage( QSettings& settings ) const
     settings.setValue( "view.style", style_ );
     settings.setValue( "view.language", language_ );
     settings.setValue( "view.textWrap", useTextWrap_ );
+    settings.setValue( "view.customScriptsPath", customScriptsPath_ );
 
     settings.setValue( "view.qtHiDpi", enableQtHighDpi_ );
     settings.setValue( "view.scaleFactorRounding", scaleFactorRounding_ );

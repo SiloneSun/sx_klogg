@@ -489,6 +489,15 @@ class Configuration final : public Persistable<Configuration> {
         useTextWrap_ = enable;
     }
 
+    QString customScriptsPath() const
+    {
+        return customScriptsPath_;
+    }
+    void setCustomScriptsPath( const QString& path )
+    {
+        customScriptsPath_ = path;
+    }
+
     bool autoRunSearchOnPatternChange() const
     {
         return autoRunSearchOnPatternChange_;
@@ -615,6 +624,8 @@ class Configuration final : public Persistable<Configuration> {
     bool qfIgnoreCase_ = false;
 
     bool useTextWrap_ = false;
+
+    QString customScriptsPath_;
 
     std::map<std::string, QStringList> shortcuts_;
 

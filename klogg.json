@@ -336,6 +336,30 @@
             "pattern": "factory_ipc_client",
             "useRegex": false,
             "wholeWord": false
+        },
+        {
+            "backColor": "#ffea5591",
+            "enabled": true,
+            "filterEnabled": true,
+            "foreColor": "#ff000000",
+            "highlightEnabled": true,
+            "ignoreCase": false,
+            "onlyMatch": true,
+            "pattern": "USB_POPUP_STATE|TL_DROP_STAT",
+            "useRegex": true,
+            "wholeWord": false
+        },
+        {
+            "backColor": "#ffffff00",
+            "enabled": true,
+            "filterEnabled": true,
+            "foreColor": "#ff000000",
+            "highlightEnabled": true,
+            "ignoreCase": false,
+            "onlyMatch": true,
+            "pattern": "handleRecordingError",
+            "useRegex": false,
+            "wholeWord": false
         }
     ],
     "version": 1
