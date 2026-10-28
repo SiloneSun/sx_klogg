@@ -20,9 +20,14 @@
 #include <catch2/catch.hpp>
 
 #include <QSignalSpy>
+#include <QFontInfo>
 #include <QTemporaryFile>
 #include <QTest>
 #include <QTimer>
+#include <QScrollBar>
+#include <QSpinBox>
+#include <QStackedWidget>
+#include <QTableWidget>
 #include <qglobal.h>
 #include <qnamespace.h>
 #include <qtestmouse.h>
@@ -148,9 +153,163 @@ struct CrawlerWidget::access_by<CrawlerWidgetPrivate> {
     {
         crawler->grab();
     }
+
+    void configureFilterRules( bool enabled )
+    {
+        crawler->filterRules_.clear();
+        CrawlerWidget::UnifiedFilterRule rule;
+        rule.pattern = "LOGDATA";
+        rule.enabled = enabled;
+        rule.priority = 10;
+        crawler->filterRules_.append( rule );
+        rule.pattern = "line";
+        rule.priority = 20;
+        crawler->filterRules_.append( rule );
+        crawler->refreshFilterRulesPanel();
+        crawler->applyFilterRules();
+        return;
+    }
+
+    QTableWidget* rulesTable()
+    {
+        return crawler->highlighterRulesTable_;
+    }
+
+    QWidget* filterPanel()
+    {
+        return crawler->filterControls_;
+    }
+
+    void moveFirstRuleDown()
+    {
+        crawler->highlighterRulesTable_->selectRow( 0 );
+        crawler->moveSelectedFilterRuleDown();
+        return;
+    }
+
+    QCheckBox* automaticReloadCheckBox()
+    {
+        return crawler->automaticReloadCheckBox_;
+    }
+
+    AbstractLogView* displayedLogView()
+    {
+        if ( crawler->primaryLogViewStack_->currentWidget() == crawler->logMainView_ ) {
+            return crawler->logMainView_;
+        }
+        return crawler->filteredView_;
+    }
+
+    bool isSearchRunning()
+    {
+        return crawler->stopButton_->isEnabled();
+    }
+
+    void markFirstLine()
+    {
+        crawler->logFilteredData_->addMark( 0_lnum );
+        return;
+    }
+
+    bool isFirstLineMarked()
+    {
+        return crawler->logFilteredData_->getMarks().contains( 0_lnum );
+    }
 };
 
 using CrawlerWidgetVisitor = CrawlerWidget::access_by<CrawlerWidgetPrivate>;
+
+SCENARIO( "Filter controls and periodic reload", "[ui][filters]" )
+{
+    QTemporaryFile file{ "crawler_controls_XXXXXX" };
+    REQUIRE( generateDataFiles( file ) );
+    Session session;
+    CrawlerWidgetVisitor visitor;
+    visitor.crawler.reset( static_cast<CrawlerWidget*>(
+        session.open( file.fileName(), []() { return new CrawlerWidget(); } ) ) );
+    REQUIRE( waitUiState( [ & ]() { return visitor.isLoadingFinished(); } ) );
+    visitor.crawler->resize( 1000, 500 );
+    visitor.crawler->show();
+    visitor.configureFilterRules( true );
+    REQUIRE( waitUiState( [ & ]() { return !visitor.isSearchRunning(); } ) );
+
+    SECTION( "Numbering follows display order but priorities move with rules" )
+    {
+        auto* table = visitor.rulesTable();
+        REQUIRE( table->horizontalHeaderItem( 0 )->text() == "No." );
+        REQUIRE( table->item( 0, 0 )->text() == "1" );
+        REQUIRE_FALSE( table->item( 0, 0 )->flags().testFlag( Qt::ItemIsEditable ) );
+        visitor.moveFirstRuleDown();
+        REQUIRE( table->item( 0, 0 )->text() == "1" );
+        REQUIRE( table->item( 1, 0 )->text() == "2" );
+        auto* firstPriority = qobject_cast<QSpinBox*>( table->cellWidget( 0, 4 ) );
+        auto* secondPriority = qobject_cast<QSpinBox*>( table->cellWidget( 1, 4 ) );
+        REQUIRE( firstPriority != nullptr );
+        REQUIRE( secondPriority != nullptr );
+        REQUIRE( firstPriority->value() == 20 );
+        REQUIRE( secondPriority->value() == 10 );
+    }
+
+    SECTION( "Ctrl J hides and restores the entire panel without clearing rules" )
+    {
+        visitor.crawler->registerShortcuts();
+        visitor.crawler->activateWindow();
+        visitor.displayedLogView()->setFocus();
+        QTest::qWait( 50 );
+        QTest::keyClick( visitor.displayedLogView(), Qt::Key_J, Qt::ControlModifier );
+        REQUIRE( visitor.filterPanel()->isHidden() );
+        REQUIRE( visitor.getLogFilteredNbLines().get() == SL_NB_LINES );
+        QTest::keyClick( visitor.displayedLogView(), Qt::Key_J, Qt::ControlModifier );
+        REQUIRE_FALSE( visitor.filterPanel()->isHidden() );
+        REQUIRE( visitor.rulesTable()->rowCount() == 2 );
+    }
+
+    SECTION( "Panel font zoom does not change the log font" )
+    {
+        visitor.crawler->registerShortcuts();
+        visitor.crawler->activateWindow();
+        visitor.displayedLogView()->setFocus();
+        QTest::qWait( 50 );
+        const auto originalPanelSize = visitor.filterPanel()->fontInfo().pointSize();
+        const auto originalLogFont = visitor.displayedLogView()->font();
+        const auto shiftedPlus = GENERATE( false, true );
+        const auto plusKey = shiftedPlus ? Qt::Key_Plus : Qt::Key_Equal;
+        auto modifiers = Qt::KeyboardModifiers{ Qt::ControlModifier };
+        if ( shiftedPlus ) {
+            modifiers |= Qt::ShiftModifier;
+        }
+        QTest::keyClick( visitor.displayedLogView(), plusKey, modifiers );
+        REQUIRE( visitor.filterPanel()->fontInfo().pointSize() == originalPanelSize + 1 );
+        REQUIRE( visitor.rulesTable()->fontInfo().pointSize() == originalPanelSize + 1 );
+        REQUIRE( visitor.displayedLogView()->font() == originalLogFont );
+        QTest::keyClick( visitor.displayedLogView(), Qt::Key_Minus, Qt::ControlModifier );
+        REQUIRE( visitor.filterPanel()->fontInfo().pointSize() == originalPanelSize );
+    }
+
+    SECTION( "Periodic reload restores filtering and scrolls to the bottom" )
+    {
+        const auto filtersEnabled = GENERATE( true, false );
+        visitor.configureFilterRules( filtersEnabled );
+        REQUIRE( waitUiState( [ & ]() { return !visitor.isSearchRunning(); } ) );
+        auto* view = visitor.displayedLogView();
+        visitor.markFirstLine();
+        view->verticalScrollBar()->setValue( 0 );
+        SafeQSignalSpy reloaded{ visitor.crawler.get(), SIGNAL( loadingFinished( LoadingStatus ) ) };
+        visitor.automaticReloadCheckBox()->setChecked( true );
+        REQUIRE( reloaded.safeWait() );
+        REQUIRE( waitUiState( [ & ]() { return !visitor.isSearchRunning(); } ) );
+        REQUIRE( visitor.getLogNbLines().get() == SL_NB_LINES );
+        REQUIRE( visitor.isFirstLineMarked() );
+        if ( filtersEnabled ) {
+            REQUIRE( visitor.getLogFilteredNbLines().get() == SL_NB_LINES );
+        }
+        REQUIRE( view->verticalScrollBar()->value() == view->verticalScrollBar()->maximum() );
+        visitor.automaticReloadCheckBox()->setChecked( false );
+        const auto reloadCount = reloaded.count();
+        QTest::qWait( 1200 );
+        REQUIRE( reloaded.count() == reloadCount );
+    }
+}
 
 SCENARIO( "Crawler widget search", "[ui]" )
 {

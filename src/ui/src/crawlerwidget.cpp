@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <limits>
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -70,11 +71,14 @@
 #include <QMessageBox>
 #include <QShortcut>
 #include <QSignalBlocker>
+#include <QScrollBar>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStringListModel>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <qglobal.h>
 #include <qobject.h>
 #include <string>
@@ -274,10 +278,12 @@ void CrawlerWidget::stopLoading()
 
 void CrawlerWidget::reload()
 {
+    loadingInProgress_ = true;
     searchState_.resetState();
     constexpr auto DropCache = true;
     logFilteredData_->clearSearch( DropCache );
     logFilteredData_->clearMarks();
+    nbMatches_ = 0_lcount;
     filteredView_->updateData();
     printSearchInfoMessage();
 
@@ -286,6 +292,34 @@ void CrawlerWidget::reload()
     // A reload is considered as a first load,
     // this is to prevent the "new data" icon to be triggered.
     firstLoadDone_ = false;
+    return;
+}
+
+void CrawlerWidget::reloadAutomatically()
+{
+    if ( !automaticReloadCheckBox_->isChecked() || loadingInProgress_
+         || automaticReloadInProgress_ || stopButton_->isEnabled() ) {
+        return;
+    }
+
+    automaticReloadInProgress_ = true;
+    const auto marks = logFilteredData_->getMarks();
+    savedMarkedLines_.assign( marks.cbegin(), marks.cend() );
+    reload();
+    return;
+}
+
+void CrawlerWidget::scrollLogViewsToBottom()
+{
+    if ( !automaticReloadCheckBox_->isChecked() ) {
+        return;
+    }
+
+    logMainView_->verticalScrollBar()->setValue(
+        logMainView_->verticalScrollBar()->maximum() );
+    filteredView_->verticalScrollBar()->setValue(
+        filteredView_->verticalScrollBar()->maximum() );
+    return;
 }
 
 void CrawlerWidget::setEncoding( std::optional<int> mib )
@@ -546,7 +580,7 @@ void CrawlerWidget::updateFilteredView( LinesCount nbMatches, int progress,
     // Try to restore the filtered window selection close to where it was
     // only for full searches to avoid disconnecting follow mode!
     if ( ( progress == 100 ) && ( initialPosition == searchStartLine_ )
-         && ( !isFollowEnabled() ) ) {
+         && ( !isFollowEnabled() ) && !automaticReloadCheckBox_->isChecked() ) {
         const auto currenLineIndex = logFilteredData_->getLineIndexNumber( currentLineNumber_ );
         LOG_DEBUG << "updateFilteredView: restoring selection: "
                   << " absolute line number (0based) " << currentLineNumber_ << " index "
@@ -554,6 +588,11 @@ void CrawlerWidget::updateFilteredView( LinesCount nbMatches, int progress,
         filteredView_->selectAndDisplayLine( currenLineIndex );
         filteredView_->setSearchLimits( searchStartLine_, searchEndLine_ );
     }
+
+    if ( progress == 100 ) {
+        scrollLogViewsToBottom();
+    }
+    return;
 }
 
 void CrawlerWidget::jumpToMatchingLine( LineNumber filteredLineNb, LinesCount nLines,
@@ -718,7 +757,7 @@ void CrawlerWidget::loadingFinishedHandler( LoadingStatus status )
     // searchButton_->setEnabled( true );
 
     // See if we need to auto-refresh the search
-    if ( searchState_.isAutorefreshAllowed() ) {
+    if ( !automaticReloadInProgress_ && searchState_.isAutorefreshAllowed() ) {
         searchEndLine_ = LineNumber( logData_->getNbLine().get() );
         if ( searchState_.isFileTruncated() )
             // We need to restart the search
@@ -739,17 +778,36 @@ void CrawlerWidget::loadingFinishedHandler( LoadingStatus status )
     else {
         firstLoadDone_ = true;
         for ( const auto& m : savedMarkedLines_ ) {
-            logFilteredData_->addMark( m );
+            if ( m < logData_->getNbLine() ) {
+                logFilteredData_->addMark( m );
+            }
         }
-        logMainView_->setFocus();
+        if ( !automaticReloadInProgress_ ) {
+            logMainView_->setFocus();
+        }
     }
 
     loadingInProgress_ = false;
+    const auto restoreSearch = automaticReloadInProgress_;
+    if ( status == LoadingStatus::Successful ) {
+        if ( restoreSearch ) {
+            replaceCurrentSearch( searchLineEdit_->currentText() );
+            if ( automaticReloadCheckBox_->isChecked()
+                 && searchLineEdit_->currentText().isEmpty() ) {
+                primaryLogViewStack_->setCurrentWidget( logMainView_ );
+                updatePrimaryLogViewButton();
+            }
+        }
+        scrollLogViewsToBottom();
+    }
+    automaticReloadInProgress_ = false;
     Q_EMIT loadingFinished( status );
+    return;
 }
 
 void CrawlerWidget::fileChangedHandler( MonitoredFileStatus status )
 {
+    loadingInProgress_ = true;
     // Handle the case where the file has been truncated
     if ( status == MonitoredFileStatus::Truncated ) {
         // Clear all marks (TODO offer the option to keep them)
@@ -764,6 +822,7 @@ void CrawlerWidget::fileChangedHandler( MonitoredFileStatus status )
             nbMatches_ = 0_lcount;
         }
     }
+    return;
 }
 
 // Returns a pointer to the window in which the search should be done
@@ -1026,9 +1085,11 @@ void CrawlerWidget::hideLegacySearchControls()
 
 namespace {
 enum FilterRuleColumn {
-    EnabledColumn = 0,
+    NumberColumn = 0,
+    EnabledColumn,
     FilterColumn,
     HighlightColumn,
+    PriorityColumn,
     PatternColumn,
     ForeColorColumn,
     BackColorColumn,
@@ -1082,6 +1143,26 @@ void CrawlerWidget::refreshFilterRulesPanel()
     for ( int row = 0; row < filterRules_.size(); ++row ) {
         const auto& rule = filterRules_.at( row );
 
+        auto* numberItem = new QTableWidgetItem( QString::number( row + 1 ) );
+        numberItem->setFlags( Qt::ItemIsEnabled | Qt::ItemIsSelectable );
+        numberItem->setTextAlignment( Qt::AlignCenter );
+        highlighterRulesTable_->setItem( row, NumberColumn, numberItem );
+
+        auto* prioritySpin = new QSpinBox;
+        prioritySpin->setRange( std::numeric_limits<int>::min(),
+                                std::numeric_limits<int>::max() );
+        prioritySpin->setValue( rule.priority );
+        prioritySpin->setKeyboardTracking( false );
+        prioritySpin->setToolTip( tr( "Higher values take precedence; ties use the earlier row." ) );
+        connect( prioritySpin, QOverload<int>::of( &QSpinBox::valueChanged ), this,
+                 [ this ]( int ) {
+                     if ( !updatingFilterRulesPanel_ ) {
+                         applyFilterRules();
+                     }
+                     return;
+                 } );
+        highlighterRulesTable_->setCellWidget( row, PriorityColumn, prioritySpin );
+
         highlighterRulesTable_->setItem( row, EnabledColumn, makeCheckItem( rule.enabled ) );
         highlighterRulesTable_->setItem( row, FilterColumn, makeCheckItem( rule.filterEnabled ) );
         highlighterRulesTable_->setItem( row, HighlightColumn,
@@ -1109,9 +1190,11 @@ void CrawlerWidget::refreshFilterRulesPanel()
     }
 
     highlighterRulesTable_->resizeColumnsToContents();
+    highlighterRulesTable_->resizeRowsToContents();
     highlighterRulesTable_->horizontalHeader()->setSectionResizeMode( PatternColumn,
                                                                       QHeaderView::Stretch );
     updatingFilterRulesPanel_ = false;
+    return;
 }
 
 void CrawlerWidget::loadFilterRulesFromActiveHighlighters()
@@ -1125,12 +1208,14 @@ void CrawlerWidget::loadFilterRulesFromActiveHighlighters()
         rule.useRegex = highlighter.useRegex();
         rule.ignoreCase = highlighter.ignoreCase();
         rule.onlyMatch = highlighter.highlightOnlyMatch();
+        rule.priority = highlighter.priority();
         rule.foreColor = highlighter.foreColor();
         rule.backColor = highlighter.backColor();
         filterRules_.append( rule );
     }
 
     refreshFilterRulesPanel();
+    return;
 }
 
 QList<CrawlerWidget::UnifiedFilterRule> CrawlerWidget::filterRulesFromPanel() const
@@ -1159,6 +1244,10 @@ QList<CrawlerWidget::UnifiedFilterRule> CrawlerWidget::filterRulesFromPanel() co
         rule.enabled = checked( row, EnabledColumn, true );
         rule.filterEnabled = checked( row, FilterColumn, true );
         rule.highlightEnabled = checked( row, HighlightColumn, true );
+        if ( const auto* prioritySpin
+             = qobject_cast<QSpinBox*>( highlighterRulesTable_->cellWidget( row, PriorityColumn ) ) ) {
+            rule.priority = prioritySpin->value();
+        }
         rule.pattern = highlighterRulesTable_->item( row, PatternColumn )
                            ? highlighterRulesTable_->item( row, PatternColumn )->text()
                            : QString{};
@@ -1305,6 +1394,7 @@ void CrawlerWidget::applyFilterRules()
         if ( rule.highlightEnabled ) {
             Highlighter highlighter( rule.pattern, rule.ignoreCase, rule.onlyMatch, rule.foreColor,
                                      rule.backColor );
+            highlighter.setPriority( rule.priority );
             highlighter.setUseRegex( rule.useRegex || rule.wholeWord );
             if ( rule.wholeWord && !rule.useRegex ) {
                 highlighter.setPattern(
@@ -1347,6 +1437,12 @@ void CrawlerWidget::applyFilterRules()
     searchLineEdit_->setEditText( filterPatterns.join( '|' ) );
     updatePredefinedFiltersWidget();
     startNewSearch();
+    if ( filterPatterns.isEmpty() ) {
+        primaryLogViewStack_->setCurrentWidget( logMainView_ );
+        logMainView_->setFocus();
+        updatePrimaryLogViewButton();
+    }
+    return;
 }
 
 void CrawlerWidget::saveFilterRules()
@@ -1365,6 +1461,7 @@ void CrawlerWidget::saveFilterRules()
         object[ "enabled" ] = rule.enabled;
         object[ "filterEnabled" ] = rule.filterEnabled;
         object[ "highlightEnabled" ] = rule.highlightEnabled;
+        object[ "priority" ] = rule.priority;
         object[ "pattern" ] = rule.pattern;
         object[ "useRegex" ] = rule.useRegex;
         object[ "ignoreCase" ] = rule.ignoreCase;
@@ -1387,6 +1484,7 @@ void CrawlerWidget::saveFilterRules()
         return;
     }
     file.write( QJsonDocument( root ).toJson( QJsonDocument::Indented ) );
+    return;
 }
 
 void CrawlerWidget::loadFilterRules()
@@ -1413,6 +1511,7 @@ void CrawlerWidget::loadFilterRules()
         rule.enabled = object.value( "enabled" ).toBool( true );
         rule.filterEnabled = object.value( "filterEnabled" ).toBool( true );
         rule.highlightEnabled = object.value( "highlightEnabled" ).toBool( true );
+        rule.priority = object.value( "priority" ).toInt( 0 );
         rule.pattern = object.value( "pattern" ).toString();
         rule.useRegex = object.value( "useRegex" ).toBool( false );
         rule.ignoreCase = object.value( "ignoreCase" ).toBool( false );
@@ -1426,6 +1525,7 @@ void CrawlerWidget::loadFilterRules()
     filterRules_ = loadedRules;
     refreshFilterRulesPanel();
     applyFilterRules();
+    return;
 }
 
 void CrawlerWidget::pickFilterRuleColor( int row, int column )
@@ -1465,6 +1565,35 @@ void CrawlerWidget::filterRuleItemChanged( QTableWidgetItem* item )
     }
 
     applyFilterRules();
+    return;
+}
+
+void CrawlerWidget::toggleFilterPanel()
+{
+    if ( filterControls_->isHidden() ) {
+        filterControls_->show();
+        if ( !filterPanelSizes_.isEmpty() ) {
+            setSizes( filterPanelSizes_ );
+        }
+    }
+    else {
+        filterPanelSizes_ = sizes();
+        activeView()->setFocus();
+        filterControls_->hide();
+    }
+    return;
+}
+
+void CrawlerWidget::changeFilterPanelFontSize( bool increase )
+{
+    auto panelFont = filterControls_->font();
+    const auto currentSize = QFontInfo( panelFont ).pointSize();
+    const auto newSize = std::clamp( currentSize + ( increase ? 1 : -1 ), 6, 32 );
+    panelFont.setPointSize( newSize );
+    filterControls_->setFont( panelFont );
+    highlighterRulesTable_->resizeColumnsToContents();
+    highlighterRulesTable_->resizeRowsToContents();
+    return;
 }
 
 //
@@ -1483,6 +1612,7 @@ void CrawlerWidget::setup()
 
     // The views
     auto bottomWindow = new QWidget;
+    filterControls_ = bottomWindow;
     bottomWindow->setContentsMargins( 2, 0, 2, 0 );
 
     overviewWidget_ = new OverviewWidget();
@@ -1691,8 +1821,9 @@ void CrawlerWidget::setup()
 
     highlighterRulesTable_ = new QTableWidget( 0, FilterRuleColumnCount, this );
     highlighterRulesTable_->setHorizontalHeaderLabels(
-        QStringList{ tr( "Use" ),        tr( "Filter" ), tr( "Highlight" ), tr( "Pattern" ),
-                     tr( "Fore" ),       tr( "Back" ),   tr( "Regex" ),     tr( "Ignore case" ),
+        QStringList{ tr( "No." ),        tr( "Use" ),    tr( "Filter" ),    tr( "Highlight" ),
+                     tr( "Priority" ),   tr( "Pattern" ), tr( "Fore" ),     tr( "Back" ),
+                     tr( "Regex" ),      tr( "Ignore case" ),
                      tr( "Whole word" ), tr( "Highlight mode" ) } );
     highlighterRulesTable_->verticalHeader()->hide();
     highlighterRulesTable_->setSelectionBehavior( QAbstractItemView::SelectRows );
@@ -1715,6 +1846,22 @@ void CrawlerWidget::setup()
     saveFilterRulesButton_ = new QPushButton( tr( "Save" ), this );
     loadFilterRulesButton_ = new QPushButton( tr( "Load" ), this );
 
+    automaticReloadCheckBox_ = new QCheckBox( tr( "Reload every second" ), bottomWindow );
+    automaticReloadCheckBox_->setToolTip(
+        tr( "Reload the log file every second and scroll to the bottom, including filtered results." ) );
+    automaticReloadTimer_ = new QTimer( this );
+    automaticReloadTimer_->setInterval( 1000 );
+    connect( automaticReloadTimer_, &QTimer::timeout, this, &CrawlerWidget::reloadAutomatically );
+    connect( automaticReloadCheckBox_, &QCheckBox::toggled, this, [ this ]( bool checked ) {
+        if ( checked ) {
+            automaticReloadTimer_->start();
+        }
+        else {
+            automaticReloadTimer_->stop();
+        }
+        return;
+    } );
+
     auto* filterRulesToolbarLayout = new QHBoxLayout;
     filterRulesToolbarLayout->setContentsMargins( 0, 0, 0, 0 );
     filterRulesToolbarLayout->addWidget( addFilterRuleButton_ );
@@ -1727,6 +1874,7 @@ void CrawlerWidget::setup()
     filterRulesToolbarLayout->addWidget( applyFilterRulesButton_ );
     filterRulesToolbarLayout->addWidget( saveFilterRulesButton_ );
     filterRulesToolbarLayout->addWidget( loadFilterRulesButton_ );
+    filterRulesToolbarLayout->addWidget( automaticReloadCheckBox_ );
     filterRulesToolbarLayout->addStretch( 1 );
 
     auto* bottomMainLayout = new QVBoxLayout;
@@ -1863,6 +2011,10 @@ void CrawlerWidget::setup()
 
     // Sent load file update to MainWindow (for status update)
     connect( logData_.get(), &LogData::loadingProgressed, this, &CrawlerWidget::loadingProgressed );
+    connect( logData_.get(), &LogData::loadingProgressed, this, [ this ]( int ) {
+        loadingInProgress_ = true;
+        return;
+    } );
     connect( logData_.get(), &LogData::loadingFinished, this,
              &CrawlerWidget::loadingFinishedHandler );
     connect( logData_.get(), &LogData::fileChanged, this, &CrawlerWidget::fileChangedHandler );
@@ -1908,6 +2060,7 @@ void CrawlerWidget::setup()
     updatePrimaryLogViewButton();
     refreshFilterRulesPanel();
     updatePredefinedFiltersWidget();
+    return;
 }
 
 void CrawlerWidget::changeFilteredView( int tabIndex )
@@ -2049,6 +2202,25 @@ void CrawlerWidget::registerShortcuts()
                                       Qt::WidgetWithChildrenShortcut,
                                       [ this ]() { togglePrimaryLogView(); } );
 
+    ShortcutAction::registerShortcut( QStringLiteral( "Ctrl+J" ), shortcuts_, this,
+                                      Qt::WidgetWithChildrenShortcut, [ this ]() {
+                                          toggleFilterPanel();
+                                          return;
+                                      } );
+    for ( const auto& shortcut : { QStringLiteral( "Ctrl+=" ), QStringLiteral( "Ctrl++" ),
+                                   QStringLiteral( "Ctrl+Shift++" ) } ) {
+        ShortcutAction::registerShortcut( shortcut, shortcuts_, this,
+                                          Qt::WidgetWithChildrenShortcut, [ this ]() {
+                                              changeFilterPanelFontSize( true );
+                                              return;
+                                          } );
+    }
+    ShortcutAction::registerShortcut( QStringLiteral( "Ctrl+-" ), shortcuts_, this,
+                                      Qt::WidgetWithChildrenShortcut, [ this ]() {
+                                          changeFilterPanelFontSize( false );
+                                          return;
+                                      } );
+
     ShortcutAction::registerShortcut(
         configuredShortcuts, shortcuts_, this, Qt::WidgetWithChildrenShortcut,
         ShortcutAction::CrawlerChangeVisibilityForward, [ this ]() {
@@ -2155,6 +2327,7 @@ void CrawlerWidget::registerShortcuts()
 
     logMainView_->registerShortcuts();
     filteredView_->registerShortcuts();
+    return;
 }
 
 void CrawlerWidget::loadIcons()

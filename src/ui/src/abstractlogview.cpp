@@ -2409,12 +2409,14 @@ void AbstractLogView::drawTextArea( QPaintDevice* paintDevice )
                 foreColor = palette.brush( QPalette::Disabled, QPalette::Text ).color();
             }
             else {
-                const auto highlightType = highlighterSet.matchLine( logLine, highlighterMatches );
+                HighlightColor lineColor;
+                const auto highlightType
+                    = highlighterSet.matchLine( logLine, highlighterMatches, &lineColor );
 
                 if ( highlightType == HighlighterMatchType::LineMatch ) {
                     // color applies to whole line
-                    foreColor = highlighterMatches.front().foreColor();
-                    backColor = highlighterMatches.front().backColor();
+                    foreColor = lineColor.foreColor;
+                    backColor = lineColor.backColor;
                 }
 
                 if ( patternHighlight ) {
@@ -2610,6 +2612,7 @@ void AbstractLogView::drawTextArea( QPaintDevice* paintDevice )
             break;
         }
     } // For each line
+    return;
 }
 
 // Draw the "pull to follow" bar and return a pixmap.

@@ -139,6 +139,17 @@ void Highlighter::setColorVariance( int colorVariance )
     colorVariance_ = colorVariance;
 }
 
+int Highlighter::priority() const
+{
+    return priority_;
+}
+
+void Highlighter::setPriority( int priority )
+{
+    priority_ = priority;
+    return;
+}
+
 const QColor& Highlighter::foreColor() const
 {
     return color_.foreColor;
@@ -274,10 +285,23 @@ void HighlighterSet::compile() const
                     []( const Highlighter& hl ) { return hl.expressionPattern(); } );
 
     compiledExpression_ = std::make_shared<MultiRegularExpression>( patterns );
+
+    highlightOrder_.clear();
+    highlightOrder_.reserve( static_cast<size_t>( highlighterList_.size() ) );
+    for ( int index = 0; index < highlighterList_.size(); ++index ) {
+        highlightOrder_.push_back( index );
+    }
+    std::sort( highlightOrder_.begin(), highlightOrder_.end(), [ this ]( int left, int right ) {
+        const auto leftPriority = highlighterList_[ left ].priority();
+        const auto rightPriority = highlighterList_[ right ].priority();
+        return leftPriority == rightPriority ? left > right : leftPriority < rightPriority;
+    } );
+    return;
 }
 
 HighlighterMatchType HighlighterSet::matchLine( const QString& line,
-                                                HighlightedMatchRanges& matches ) const
+                                                HighlightedMatchRanges& matches,
+                                                HighlightColor* lineColor ) const
 {
     if ( highlighterList_.empty() ) {
         return HighlighterMatchType::NoMatch;
@@ -298,7 +322,7 @@ HighlighterMatchType HighlighterSet::matchLine( const QString& line,
 
     auto matchType = HighlighterMatchType::NoMatch;
 
-    for ( int index = static_cast<int>( highlighterList_.size() ) - 1; index >= 0; --index ) {
+    for ( const auto index : highlightOrder_ ) {
         const Highlighter& hl = highlighterList_[ index ];
         if ( !matchedPatterns[ static_cast<size_t>( index ) ].second ) {
             continue;
@@ -317,6 +341,9 @@ HighlighterMatchType HighlighterSet::matchLine( const QString& line,
         }
         else {
             matchType = HighlighterMatchType::LineMatch;
+            if ( lineColor ) {
+                *lineColor = { hl.foreColor(), hl.backColor() };
+            }
             matches.clear();
             matches.addMatch(
                 { 0_lcol, LineLength{ line.size() }, hl.foreColor(), hl.backColor() } );
@@ -341,9 +368,11 @@ void Highlighter::saveToStorage( QSettings& settings ) const
     settings.setValue( "use_regex", useRegex_ );
     settings.setValue( "variate_colors", variateColors_ );
     settings.setValue( "color_variance", colorVariance_ );
+    settings.setValue( "priority", priority_ );
     // save colors as user friendly strings in config
     settings.setValue( "fore_colour", color_.foreColor.name( QColor::HexArgb ) );
     settings.setValue( "back_colour", color_.backColor.name( QColor::HexArgb ) );
+    return;
 }
 
 void Highlighter::retrieveFromStorage( QSettings& settings )
@@ -357,8 +386,10 @@ void Highlighter::retrieveFromStorage( QSettings& settings )
     useRegex_ = settings.value( "use_regex", true ).toBool();
     variateColors_ = settings.value( "variate_colors", false ).toBool();
     colorVariance_ = settings.value( "color_variance", 15 ).toInt();
+    priority_ = settings.value( "priority", 0 ).toInt();
     color_.foreColor = QColor( settings.value( "fore_colour" ).toString() );
     color_.backColor = QColor( settings.value( "back_colour" ).toString() );
+    return;
 }
 
 void HighlighterSet::saveToStorage( QSettings& settings ) const
@@ -384,6 +415,8 @@ void HighlighterSet::retrieveFromStorage( QSettings& settings )
     LOG_DEBUG << "HighlighterSet::retrieveFromStorage";
 
     highlighterList_.clear();
+    compiledExpression_.reset();
+    highlightOrder_.clear();
 
     if ( settings.contains( "FilterSet/version" ) ) {
         LOG_INFO << "HighlighterSet found old filters";
@@ -428,6 +461,7 @@ void HighlighterSet::retrieveFromStorage( QSettings& settings )
         }
         settings.endGroup();
     }
+    return;
 }
 
 QList<HighlighterSet> HighlighterSetCollection::highlighterSets() const

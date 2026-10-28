@@ -87,6 +87,9 @@ class Highlighter {
     int colorVariance() const;
     void setColorVariance( int colorVariance );
 
+    int priority() const;
+    void setPriority( int priority );
+
     const QColor& foreColor() const;
     void setForeColor( const QColor& foreColor );
     const QColor& backColor() const;
@@ -112,6 +115,7 @@ class Highlighter {
     bool highlightOnlyMatch_ = false;
     bool variateColors_ = false;
     int colorVariance_ = 15;
+    int priority_ = 0;
 
     HighlightColor color_;
 };
@@ -138,7 +142,8 @@ class HighlighterSet {
     // Returns weither the passed line match a filter of the set,
     // if so, it returns the fore/back colors the line should use.
     HighlighterMatchType matchLine( const QString& line,
-                                    HighlightedMatchRanges& matches ) const;
+                                    HighlightedMatchRanges& matches,
+                                    HighlightColor* lineColor = nullptr ) const;
 
     bool isEmpty() const;
 
@@ -165,6 +170,7 @@ class HighlighterSet {
     friend class HighlighterSetCollection;
 
     mutable std::shared_ptr<MultiRegularExpression> compiledExpression_;
+    mutable klogg::vector<int> highlightOrder_;
 };
 
 struct QuickHighlighter {
